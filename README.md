@@ -1,7 +1,27 @@
 libmem-mcp
 ==========
 
-Read-only MCP server for the Python `libmem` package.
+==========
+
+## NOTE: YOU MUST HAVE `UV` AND `libmem` INSTALLED TO USE THIS SERVER. IT IS NOT INCLUDED AS A DEPENDENCY.
+
+Please follow the instructions to install [uv](https://docs.astral.sh/uv/getting-started/installation/) and [libmem](https://github.com/rdbo/libmem) before using this server.
+
+===========
+
+## Installation
+
+```bash
+git clone https://github.com/awcook97/libmem_mcp.git
+cd libmem_mcp
+uv sync
+```
+
+============
+
+## What this is
+
+A simple read-only MCP server for the Python `libmem` package. Does not write to keep you safe from anticheat, and also it'd be really stupid to give AI write access to memory. These fools can't even understand the concept of a logger, much less low level memory manipulation.
 
 ## Run
 

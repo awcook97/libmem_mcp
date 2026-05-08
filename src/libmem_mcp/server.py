@@ -1,12 +1,52 @@
 from __future__ import annotations
 
 import base64
+import functools
+import json
 import os
+import pathlib
+import time
 from collections.abc import Iterable
 from typing import Any, cast
 
 import libmem
 from mcp.server.fastmcp import FastMCP
+
+from libmem_mcp import log as _log
+
+# ── autologger setup ─────────────────────────────────────────────────────────
+_LOG_DIR = pathlib.Path(os.getenv("LIBMEM_MCP_LOG_DIR", str(pathlib.Path(__file__).parent.parent.parent / "output")))
+_log_listener = _log.setup(_LOG_DIR / "mcp_autolog.log", level="trace")
+_logger = _log.get_logger("mcp")
+_logger.info("libmem-mcp server started, logging to %s", _LOG_DIR / "mcp_autolog.log")
+
+
+def _autolog(fn: Any) -> Any:
+    """Wrap an MCP tool function to log every call and result."""
+    @functools.wraps(fn)
+    def _wrapper(*args: Any, **kwargs: Any) -> Any:
+        name = fn.__name__
+        arg_str = ", ".join(
+            [repr(a) for a in args] + [f"{k}={v!r}" for k, v in kwargs.items()]
+        )
+        _logger.trace(">> %s(%s)", name, arg_str)
+        t0 = time.monotonic()
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as exc:
+            _logger.error("!! %s raised %s: %s", name, type(exc).__name__, exc)
+            raise
+        elapsed = (time.monotonic() - t0) * 1000
+        # Summarise large results so the log stays readable
+        try:
+            summary = json.dumps(result, default=str)
+            if len(summary) > 500:
+                summary = summary[:500] + f"... [{len(summary)} chars total]"
+        except Exception:
+            summary = repr(result)[:500]
+        _logger.debug("<< %s  (%.1f ms)  %s", name, elapsed, summary)
+        return result
+    return _wrapper
 
 MAX_READ_BYTES = int(os.getenv("LIBMEM_MCP_MAX_READ_BYTES", str(1024 * 1024)))
 
@@ -757,4 +797,34 @@ def code_length_ex(pid: int | str, machine_code: int | str, min_length: int | st
 
 
 def main() -> None:
-    mcp.run()
+    # Intercept at the ToolManager.call_tool level — the single async choke
+    # point for every MCP tool call, regardless of how FastMCP routes internally.
+    import asyncio
+
+    _original_call_tool = mcp._tool_manager.call_tool
+
+    async def _logged_call_tool(name: str, arguments: dict, *args: Any, **kwargs: Any) -> Any:
+        arg_str = ", ".join(f"{k}={v!r}" for k, v in (arguments or {}).items())
+        _logger.trace(">> %s(%s)", name, arg_str)
+        t0 = time.monotonic()
+        try:
+            result = await _original_call_tool(name, arguments, *args, **kwargs)
+        except Exception as exc:
+            elapsed = (time.monotonic() - t0) * 1000
+            _logger.error("!! %s (%.1f ms) raised %s: %s", name, elapsed, type(exc).__name__, exc)
+            raise
+        elapsed = (time.monotonic() - t0) * 1000
+        try:
+            summary = json.dumps(result, default=str)
+            if len(summary) > 500:
+                summary = summary[:500] + f"... [{len(summary)} chars total]"
+        except Exception:
+            summary = repr(result)[:500]
+        _logger.debug("<< %s  (%.1f ms)  %s", name, elapsed, summary)
+        return result
+
+    mcp._tool_manager.call_tool = _logged_call_tool  # type: ignore[method-assign]
+    try:
+        mcp.run()
+    finally:
+        _log_listener.stop()

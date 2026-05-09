@@ -12,13 +12,13 @@ from typing import Any, cast
 import libmem
 from mcp.server.fastmcp import FastMCP
 
-from libmem_mcp import log as _log
+from common.log import MemLogger
 
 # ── autologger setup ─────────────────────────────────────────────────────────
 _LOG_DIR = pathlib.Path(os.getenv("LIBMEM_MCP_LOG_DIR", str(pathlib.Path(__file__).parent.parent.parent / "output")))
-_log_listener = _log.setup(_LOG_DIR / "mcp_autolog.log", level="trace")
-_logger = _log.get_logger("mcp")
-_logger.info("libmem-mcp server started, logging to %s", _LOG_DIR / "mcp_autolog.log")
+_mlog = MemLogger("libmem_mcp", _LOG_DIR, level="trace")
+_logger = _mlog.get("server")
+_logger.info("libmem-mcp server started, logging to %s", _mlog.log_file)
 
 
 def _autolog(fn: Any) -> Any:
@@ -825,4 +825,4 @@ def main() -> None:
     try:
         mcp.run()
     finally:
-        _log_listener.stop()
+        _mlog.stop()

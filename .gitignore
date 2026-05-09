@@ -9,4 +9,5 @@ wheels/
 # Virtual environments
 .venv
 output/
+.vscode/mcp.json
 scripts/

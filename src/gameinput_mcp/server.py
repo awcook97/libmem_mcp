@@ -424,6 +424,18 @@ def main() -> None:
         default=os.getenv("GAMEINPUT_MCP_LOG_LEVEL", "info"),
         help="Log level (trace/debug/info/warn/error)",
     )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse"],
+        default="stdio",
+        help="Transport to use. 'sse' starts an HTTP server you connect to; 'stdio' is for clients that spawn the process.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("FASTMCP_PORT", "8766")),
+        help="Port for SSE transport (default: 8766)",
+    )
 
     # Forward import-keymap to its own CLI (pass remaining args).
     if len(sys.argv) > 1 and sys.argv[1] == "import-keymap":
@@ -445,13 +457,18 @@ def main() -> None:
         _logger.error("Config error: %s", exc)
         sys.exit(1)
 
+    if ns.transport == "sse":
+        os.environ["FASTMCP_PORT"] = str(ns.port)
+
     _logger.info(
-        "gameinput-mcp started | targets: %s | config: %s",
+        "gameinput-mcp started | targets: %s | config: %s | transport=%s port=%s",
         list(_config.targets),
         resolve_config_path(ns.config),
+        ns.transport,
+        ns.port if ns.transport == "sse" else "n/a",
     )
 
     try:
-        mcp.run()
+        mcp.run(transport=ns.transport)
     finally:
         _mlog.stop()

@@ -59,25 +59,18 @@ Paste into `.vscode/mcp.json` in your workspace, or into VS Code user settings u
 {
   "servers": {
     "libmem-mcp": {
-      "type": "stdio",
-      "command": "uv",
-      "args": [
-        "--directory", "/absolute/path/to/libmem_mcp",
-        "run", "libmem-mcp"
-      ]
+      "type": "sse",
+      "url": "http://localhost:8765/sse"
     },
     "gameinput-mcp": {
-      "type": "stdio",
-      "command": "uv",
-      "args": [
-        "--directory", "/absolute/path/to/libmem_mcp",
-        "run", "gameinput-mcp",
-        "--config", "/absolute/path/to/gameinput.config.json"
-      ]
+      "type": "sse",
+      "url": "http://localhost:8766/sse"
     }
   }
 }
 ```
+
+A ready-to-copy template is also at `.vscode/mcp.json.example` in the repo.
 
 ### Claude Desktop
 
@@ -89,31 +82,39 @@ Config file locations:
 {
   "mcpServers": {
     "libmem-mcp": {
-      "command": "uv",
-      "args": [
-        "--directory", "/absolute/path/to/libmem_mcp",
-        "run", "libmem-mcp"
-      ]
+      "url": "http://localhost:8765/sse"
     },
     "gameinput-mcp": {
-      "command": "uv",
-      "args": [
-        "--directory", "/absolute/path/to/libmem_mcp",
-        "run", "gameinput-mcp",
-        "--config", "/absolute/path/to/gameinput.config.json"
-      ]
+      "url": "http://localhost:8766/sse"
     }
   }
 }
 ```
 
-> **Note:** The MCP client starts and owns the server process. To cut off the AI's access to `gameinput-mcp` at any time, remove it from the config and reload. The AI gets a transport error on every subsequent tool call.
+> **Note:** You run the servers yourself — see [Running the servers](#running-the-servers) below. The MCP config tells the AI client where to connect. It does **not** spawn anything.
 
 ### Windows path note
 
-If `uv` isn't on your `PATH` in the client's environment, use the full path:
-- `C:\\Users\\you\\.local\\bin\\uv.exe` (typical pip/scoop install)
-- Or wherever `where uv` points.
+No path adjustments needed for SSE. Just make sure the port isn't blocked by a firewall or used by something else.
+
+---
+
+## Running the servers
+
+You start these yourself in your own terminal. The MCP config above just tells the AI client where to connect — it does **not** spawn a process.
+
+```bash
+# libmem-mcp (SSE on port 8765)
+uv run libmem-mcp --transport sse
+
+# gameinput-mcp (SSE on port 8766)
+uv run gameinput-mcp --transport sse --config path/to/gameinput.config.json
+
+# Custom port
+uv run libmem-mcp --transport sse --port 9000
+```
+
+**Ctrl+C in the terminal = kill switch.** The AI gets no response on any tool call while a server is down.
 
 ---
 
@@ -157,9 +158,13 @@ There is no `press_key`, `type_text`, or `mouse_at` tool. Every input goes throu
 
 ### Kill switch
 
-The MCP client spawns the server process. To immediately revoke access: remove `gameinput-mcp` from your MCP client config and reload. The AI gets a transport error on every subsequent call.
+**You run the server in your own terminal. Ctrl+C kills it.** The AI gets no response on any tool call while the server is down.
 
-For a harder kill: `pkill -f "gameinput-mcp"`.
+```bash
+uv run gameinput-mcp --transport sse --config path/to/gameinput.config.json
+```
+
+Do not background it. The terminal is the kill switch.
 
 ---
 

@@ -797,6 +797,26 @@ def code_length_ex(pid: int | str, machine_code: int | str, min_length: int | st
 
 
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="libmem-mcp")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse"],
+        default="stdio",
+        help="Transport to use. 'sse' starts an HTTP server you connect to; 'stdio' is for clients that spawn the process.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("FASTMCP_PORT", "8765")),
+        help="Port for SSE transport (default: 8765)",
+    )
+    ns = parser.parse_args()
+
+    if ns.transport == "sse":
+        os.environ["FASTMCP_PORT"] = str(ns.port)
+
     # Intercept at the ToolManager.call_tool level — the single async choke
     # point for every MCP tool call, regardless of how FastMCP routes internally.
     import asyncio
@@ -822,7 +842,8 @@ def main() -> None:
         return result
 
     mcp._tool_manager.call_tool = _logged_call_tool  # type: ignore[method-assign]
+    _logger.info("libmem-mcp transport=%s port=%s", ns.transport, ns.port if ns.transport == "sse" else "n/a")
     try:
-        mcp.run()
+        mcp.run(transport=ns.transport)
     finally:
         _mlog.stop()

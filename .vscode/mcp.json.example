@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "libmem-mcp": {
+      "type": "sse",
+      "url": "http://localhost:8765/sse"
+    },
+    "gameinput-mcp": {
+      "type": "sse",
+      "url": "http://localhost:8766/sse"
+    }
+  }
+}

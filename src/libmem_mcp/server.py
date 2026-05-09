@@ -816,10 +816,8 @@ def main() -> None:
         elapsed = (time.monotonic() - t0) * 1000
         try:
             summary = json.dumps(result, default=str)
-            if len(summary) > 500:
-                summary = summary[:500] + f"... [{len(summary)} chars total]"
         except Exception:
-            summary = repr(result)[:500]
+            summary = repr(result)
         _logger.debug("<< %s  (%.1f ms)  %s", name, elapsed, summary)
         return result
 

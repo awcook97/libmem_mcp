@@ -47,30 +47,52 @@ uv sync --extra gameinput-win32
 
 ---
 
+## Architecture
+
+There are three processes, not two:
+
+| Process | Who starts it | Purpose |
+|---|---|---|
+| `libmem-mcp` | VS Code (stdio) | MCP server for memory inspection |
+| `gameinput-mcp` | VS Code (stdio) | Thin MCP bridge — forwards tool calls to daemon |
+| `gameinput-daemon` | **You** (your terminal) | All actual input/screenshot logic. Kill switch. |
+
+VS Code spawns the MCP servers automatically. You run only the daemon.
+
+---
+
 ## MCP Client Setup
 
-This is the JSON you paste into your AI client. Replace `/absolute/path/to/libmem_mcp` with the actual path where you cloned the repo.
+Replace `/absolute/path/to/libmem_mcp` with where you cloned the repo.
 
 ### VS Code (GitHub Copilot)
 
-Paste into `.vscode/mcp.json` in your workspace, or into VS Code user settings under `"mcp"`:
+Create `.vscode/mcp.json` in your workspace (a template is at `.vscode/mcp.json.example`):
 
 ```json
 {
   "servers": {
     "libmem-mcp": {
-      "type": "sse",
-      "url": "http://localhost:8765/sse"
+      "type": "stdio",
+      "command": "/absolute/path/to/libmem_mcp/.venv/bin/python",
+      "args": ["-m", "libmem_mcp"],
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/libmem_mcp/src"
+      }
     },
     "gameinput-mcp": {
-      "type": "sse",
-      "url": "http://localhost:8766/sse"
+      "type": "stdio",
+      "command": "/absolute/path/to/libmem_mcp/.venv/bin/python",
+      "args": ["-m", "gameinput_mcp"],
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/libmem_mcp/src"
+      }
     }
   }
 }
 ```
 
-A ready-to-copy template is also at `.vscode/mcp.json.example` in the repo.
+VS Code will spawn both MCP servers automatically when you open the workspace.
 
 ### Claude Desktop
 
@@ -82,39 +104,42 @@ Config file locations:
 {
   "mcpServers": {
     "libmem-mcp": {
-      "url": "http://localhost:8765/sse"
+      "command": "/absolute/path/to/libmem_mcp/.venv/bin/python",
+      "args": ["-m", "libmem_mcp"],
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/libmem_mcp/src"
+      }
     },
     "gameinput-mcp": {
-      "url": "http://localhost:8766/sse"
+      "command": "/absolute/path/to/libmem_mcp/.venv/bin/python",
+      "args": ["-m", "gameinput_mcp"],
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/libmem_mcp/src"
+      }
     }
   }
 }
 ```
 
-> **Note:** You run the servers yourself — see [Running the servers](#running-the-servers) below. The MCP config tells the AI client where to connect. It does **not** spawn anything.
-
-### Windows path note
-
-No path adjustments needed for SSE. Just make sure the port isn't blocked by a firewall or used by something else.
-
 ---
 
-## Running the servers
+## Running the daemon
 
-You start these yourself in your own terminal. The MCP config above just tells the AI client where to connect — it does **not** spawn a process.
+Before the AI can send any input, you need `gameinput-daemon` running in your terminal. This is the kill switch — **Ctrl+C there and the AI can't touch anything.**
 
 ```bash
-# libmem-mcp (SSE on port 8765)
-uv run libmem-mcp --transport sse
+./start.sh --config path/to/gameinput.config.json
 
-# gameinput-mcp (SSE on port 8766)
-uv run gameinput-mcp --transport sse --config path/to/gameinput.config.json
+# or directly:
+uv run gameinput-daemon --config path/to/gameinput.config.json
 
-# Custom port
-uv run libmem-mcp --transport sse --port 9000
+# optional flags:
+#   --port N          listen port (default: 8767)
+#   --host ADDR       bind address (default: 127.0.0.1)
+#   --log-level LEVEL trace/debug/info/warn/error (default: debug)
 ```
 
-**Ctrl+C in the terminal = kill switch.** The AI gets no response on any tool call while a server is down.
+`libmem-mcp` has no daemon — VS Code spawns it directly, no extra step needed.
 
 ---
 
@@ -158,10 +183,10 @@ There is no `press_key`, `type_text`, or `mouse_at` tool. Every input goes throu
 
 ### Kill switch
 
-**You run the server in your own terminal. Ctrl+C kills it.** The AI gets no response on any tool call while the server is down.
+**You run `gameinput-daemon` in your own terminal. Ctrl+C kills it.** The AI gets no response on any gameinput tool call while the daemon is down. The MCP bridge (`gameinput-mcp`) is a tiny process with zero power on its own — the daemon has everything.
 
 ```bash
-uv run gameinput-mcp --transport sse --config path/to/gameinput.config.json
+uv run gameinput-daemon --config path/to/gameinput.config.json
 ```
 
 Do not background it. The terminal is the kill switch.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import functools
+import itertools
 import json
 import os
 import pathlib
@@ -50,7 +51,17 @@ def _autolog(fn: Any) -> Any:
 
 MAX_READ_BYTES = int(os.getenv("LIBMEM_MCP_MAX_READ_BYTES", str(1024 * 1024)))
 
-EXPOSED_LIBMEM_FUNCTIONS = [
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Mutating libmem APIs (writes, allocation, hooking, protection changes,
+# module load/unload, vtable hooks) are only registered when this flag is set.
+# By default the server stays a read-only inspector.
+WRITES_ENABLED = _env_flag("LIBMEM_MCP_ENABLE_WRITES")
+
+READONLY_LIBMEM_FUNCTIONS = [
     "assemble",
     "assemble_ex",
     "code_length",
@@ -96,35 +107,24 @@ EXPOSED_LIBMEM_FUNCTIONS = [
     "sig_scan_ex",
 ]
 
-EXCLUDED_LIBMEM_FUNCTIONS = [
-    "alloc_memory",
-    "alloc_memory_ex",
-    "free_memory",
-    "free_memory_ex",
-    "hook_code",
-    "hook_code_ex",
-    "load_module",
-    "load_module_ex",
-    "prot_memory",
-    "prot_memory_ex",
-    "set_memory",
-    "set_memory_ex",
-    "unhook_code",
-    "unhook_code_ex",
-    "unload_module",
-    "unload_module_ex",
-    "write_memory",
-    "write_memory_ex",
-]
+# The mutating tools registered when WRITES_ENABLED are listed by libmem_mcp_info,
+# derived from the actual _MUTATING_TOOLS registration list (defined further down)
+# so the reported names can never drift from what is really exposed.
+
+# Kept for backwards compatibility with anything reading the old name.
+EXPOSED_LIBMEM_FUNCTIONS = READONLY_LIBMEM_FUNCTIONS
 
 mcp = FastMCP(
     "libmem-mcp",
     instructions=(
-        "Read-only MCP wrapper for libmem. Exposes process, thread, module, "
-        "symbol, segment, memory-read, scan, pointer, disassembly, and assembly "
-        "helpers. Mutating libmem APIs for hooks, allocation, setting memory, "
-        "protection changes, freeing, module load/unload, and memory writes are "
-        "intentionally not exposed."
+        "MCP wrapper for libmem. Always exposes read-only helpers: process, "
+        "thread, module, symbol, segment, memory-read, scan, pointer, "
+        "disassembly, and assembly. Mutating libmem APIs (memory writes, "
+        "set_memory, alloc/free, protection changes, code hooks, module "
+        "load/unload, and Vmt vtable hooks) are gated behind the "
+        "LIBMEM_MCP_ENABLE_WRITES environment variable and are only registered "
+        "when it is set. Call libmem_mcp_info to see which tools are active and "
+        "the accepted address/byte/protection input formats."
     ),
 )
 
@@ -366,14 +366,55 @@ def _resolve_arch(arch: str) -> Any:
     raise ValueError(f"Unknown architecture {arch!r}. Supported values: {', '.join(supported)}")
 
 
+def _resolve_prot(prot: str) -> Any:
+    """Resolve a memory-protection value from rwx letters or a PROT_* name.
+
+    Accepts any case/order and optional ``PROT_``/``LM_PROT_`` prefixes, e.g.
+    ``"rw"``, ``"rwx"``, ``"xr"``, ``"PROT_RW"``, ``"LM_PROT_XRW"``.
+    """
+    raw = prot.upper().replace("-", "").replace("_", "")
+    if raw.startswith("LMPROT"):
+        raw = raw[len("LMPROT"):]
+    elif raw.startswith("PROT"):
+        raw = raw[len("PROT"):]
+    letters = set(raw)
+    valid = {"R", "W", "X"}
+    if not letters or not letters <= valid:
+        raise ValueError(
+            f"Unknown protection {prot!r}. Use a combination of r/w/x "
+            "(e.g. 'r', 'rw', 'rwx') or a name such as PROT_XRW."
+        )
+    # libmem orders the constant names X, then R, then W (PROT_XR, PROT_XRW, ...).
+    name = "PROT_" + "".join(letter for letter in "XRW" if letter in letters)
+    return getattr(libmem, name)
+
+
+def _serialize_prot(prot: Any) -> dict[str, Any] | None:
+    if prot is None:
+        return None
+    text = str(prot)
+    return {
+        "protection": text,
+        "short": text.removeprefix("LM_PROT_").removeprefix("PROT_"),
+    }
+
+
 @mcp.tool()
 def libmem_mcp_info() -> dict[str, Any]:
-    """List the libmem APIs exposed by this read-only MCP and the APIs intentionally excluded."""
+    """List the libmem APIs this MCP exposes and whether mutating tools are enabled."""
     return {
-        "exposed_functions": EXPOSED_LIBMEM_FUNCTIONS,
-        "excluded_functions": EXCLUDED_LIBMEM_FUNCTIONS,
+        "readonly_functions": READONLY_LIBMEM_FUNCTIONS,
+        "mutating_functions": [fn.__name__ for fn in _MUTATING_TOOLS],
+        "writes_enabled": WRITES_ENABLED,
+        "writes_enabled_note": (
+            "Mutating tools (writes, alloc/free, hooks, protection changes, "
+            "module load/unload, vmt_*) are registered only when the "
+            "LIBMEM_MCP_ENABLE_WRITES environment variable is set. They are "
+            + ("ENABLED." if WRITES_ENABLED else "NOT registered in this session.")
+        ),
         "max_read_bytes": MAX_READ_BYTES,
         "byte_input_encodings": ["hex", "base64", "utf-8"],
+        "protection_inputs": "Protection parameters accept r/w/x combinations such as 'rw' or 'rwx', or names like PROT_XRW.",
         "address_inputs": "Address parameters accept integers or base-prefixed strings such as 0x7ffdeadbeef.",
     }
 
@@ -796,26 +837,327 @@ def code_length_ex(pid: int | str, machine_code: int | str, min_length: int | st
     )
 
 
+# ── mutating libmem tools ─────────────────────────────────────────────────────
+# Defined unconditionally but only registered as MCP tools when WRITES_ENABLED
+# (LIBMEM_MCP_ENABLE_WRITES) is set. Every function below mutates the target
+# process: writes, allocation, hooks, protection changes, or module loading.
+
+
+def _as_byte_value(value: int | str, name: str) -> int:
+    number = _as_int(value, name)
+    if not 0 <= number <= 255:
+        raise ValueError(f"{name} must be a single byte value between 0 and 255")
+    return number
+
+
+def write_memory(dest: int | str, source: str, encoding: str = "hex") -> dict[str, Any]:
+    """Writes bytes into the MCP server process. source encoding is hex, base64, or utf-8."""
+    address = _as_non_negative_int(dest, "dest")
+    payload = _decode_bytes(source, encoding)
+    success = bool(libmem.write_memory(address, payload))
+    return {"success": success, "bytes_written": len(payload), "dest": address, "dest_hex": _hex(address)}
+
+
+def write_memory_ex(pid: int | str, dest: int | str, source: str, encoding: str = "hex") -> dict[str, Any]:
+    """Writes bytes into a remote process. source encoding is hex, base64, or utf-8."""
+    address = _as_non_negative_int(dest, "dest")
+    payload = _decode_bytes(source, encoding)
+    success = bool(libmem.write_memory_ex(_resolve_process(pid), address, payload))
+    return {"success": success, "bytes_written": len(payload), "dest": address, "dest_hex": _hex(address)}
+
+
+def set_memory(dest: int | str, byte: int | str, size: int | str) -> dict[str, Any]:
+    """Fills memory in the MCP server process with a single byte value (0-255)."""
+    address = _as_non_negative_int(dest, "dest")
+    fill = _as_byte_value(byte, "byte")
+    length = _as_non_negative_int(size, "size")
+    success = bool(libmem.set_memory(address, bytes([fill]), length))
+    return {"success": success, "dest": address, "dest_hex": _hex(address), "byte": fill, "size": length}
+
+
+def set_memory_ex(pid: int | str, dest: int | str, byte: int | str, size: int | str) -> dict[str, Any]:
+    """Fills memory in a remote process with a single byte value (0-255)."""
+    address = _as_non_negative_int(dest, "dest")
+    fill = _as_byte_value(byte, "byte")
+    length = _as_non_negative_int(size, "size")
+    success = bool(libmem.set_memory_ex(_resolve_process(pid), address, bytes([fill]), length))
+    return {"success": success, "dest": address, "dest_hex": _hex(address), "byte": fill, "size": length}
+
+
+def alloc_memory(size: int | str, prot: str) -> dict[str, Any] | None:
+    """Allocates memory in the MCP server process. prot is an rwx combo such as 'rw' or 'rwx'."""
+    address = libmem.alloc_memory(_as_non_negative_int(size, "size"), _resolve_prot(prot))
+    result = _serialize_address(address)
+    if result is not None:
+        result["protection"] = str(_resolve_prot(prot))
+        result["size"] = _as_non_negative_int(size, "size")
+    return result
+
+
+def alloc_memory_ex(pid: int | str, size: int | str, prot: str) -> dict[str, Any] | None:
+    """Allocates memory in a remote process. prot is an rwx combo such as 'rw' or 'rwx'."""
+    address = libmem.alloc_memory_ex(_resolve_process(pid), _as_non_negative_int(size, "size"), _resolve_prot(prot))
+    result = _serialize_address(address)
+    if result is not None:
+        result["protection"] = str(_resolve_prot(prot))
+        result["size"] = _as_non_negative_int(size, "size")
+    return result
+
+
+def free_memory(address: int | str, size: int | str) -> dict[str, Any]:
+    """Frees memory previously allocated in the MCP server process."""
+    target = _as_non_negative_int(address, "address")
+    length = _as_non_negative_int(size, "size")
+    return {"success": bool(libmem.free_memory(target, length)), "address": target, "address_hex": _hex(target), "size": length}
+
+
+def free_memory_ex(pid: int | str, address: int | str, size: int | str) -> dict[str, Any]:
+    """Frees memory previously allocated in a remote process."""
+    target = _as_non_negative_int(address, "address")
+    length = _as_non_negative_int(size, "size")
+    success = bool(libmem.free_memory_ex(_resolve_process(pid), target, length))
+    return {"success": success, "address": target, "address_hex": _hex(target), "size": length}
+
+
+def prot_memory(address: int | str, size: int | str, prot: str) -> dict[str, Any]:
+    """Changes memory protection in the MCP server process and returns the previous protection."""
+    target = _as_non_negative_int(address, "address")
+    length = _as_non_negative_int(size, "size")
+    requested = _resolve_prot(prot)
+    previous = libmem.prot_memory(target, length, requested)
+    return {
+        "success": previous is not None,
+        "address": target,
+        "address_hex": _hex(target),
+        "size": length,
+        "requested_protection": str(requested),
+        "previous_protection": _serialize_prot(previous),
+    }
+
+
+def prot_memory_ex(pid: int | str, address: int | str, size: int | str, prot: str) -> dict[str, Any]:
+    """Changes memory protection in a remote process and returns the previous protection."""
+    target = _as_non_negative_int(address, "address")
+    length = _as_non_negative_int(size, "size")
+    requested = _resolve_prot(prot)
+    previous = libmem.prot_memory_ex(_resolve_process(pid), target, length, requested)
+    return {
+        "success": previous is not None,
+        "address": target,
+        "address_hex": _hex(target),
+        "size": length,
+        "requested_protection": str(requested),
+        "previous_protection": _serialize_prot(previous),
+    }
+
+
+def _serialize_trampoline(trampoline: Any) -> dict[str, Any] | None:
+    if trampoline is None:
+        return None
+    address, size = trampoline
+    return {
+        "hooked": True,
+        "trampoline_address": address,
+        "trampoline_address_hex": _hex(address),
+        "trampoline_size": size,
+        "unhook_with": "Pass from_address, trampoline_address, and trampoline_size to unhook_code.",
+    }
+
+
+def hook_code(from_address: int | str, to_address: int | str) -> dict[str, Any] | None:
+    """Hooks/detours code in the MCP server process, returning the trampoline used to call the original."""
+    trampoline = libmem.hook_code(
+        _as_non_negative_int(from_address, "from_address"),
+        _as_non_negative_int(to_address, "to_address"),
+    )
+    return _serialize_trampoline(trampoline)
+
+
+def hook_code_ex(pid: int | str, from_address: int | str, to_address: int | str) -> dict[str, Any] | None:
+    """Hooks/detours code in a remote process, returning the trampoline used to call the original."""
+    trampoline = libmem.hook_code_ex(
+        _resolve_process(pid),
+        _as_non_negative_int(from_address, "from_address"),
+        _as_non_negative_int(to_address, "to_address"),
+    )
+    return _serialize_trampoline(trampoline)
+
+
+def unhook_code(from_address: int | str, trampoline_address: int | str, trampoline_size: int | str) -> dict[str, Any]:
+    """Removes a code hook in the MCP server process using the trampoline returned by hook_code."""
+    origin = _as_non_negative_int(from_address, "from_address")
+    trampoline = (_as_non_negative_int(trampoline_address, "trampoline_address"), _as_non_negative_int(trampoline_size, "trampoline_size"))
+    return {"success": bool(libmem.unhook_code(origin, trampoline)), "from_address": origin, "from_address_hex": _hex(origin)}
+
+
+def unhook_code_ex(pid: int | str, from_address: int | str, trampoline_address: int | str, trampoline_size: int | str) -> dict[str, Any]:
+    """Removes a code hook in a remote process using the trampoline returned by hook_code_ex."""
+    origin = _as_non_negative_int(from_address, "from_address")
+    trampoline = (_as_non_negative_int(trampoline_address, "trampoline_address"), _as_non_negative_int(trampoline_size, "trampoline_size"))
+    success = bool(libmem.unhook_code_ex(_resolve_process(pid), origin, trampoline))
+    return {"success": success, "from_address": origin, "from_address_hex": _hex(origin)}
+
+
+def load_module(module_path: str) -> dict[str, Any] | None:
+    """Loads a module (shared library) into the MCP server process."""
+    return _serialize_module(libmem.load_module(module_path))
+
+
+def load_module_ex(pid: int | str, module_path: str) -> dict[str, Any] | None:
+    """Loads a module (shared library) into a remote process."""
+    return _serialize_module(libmem.load_module_ex(_resolve_process(pid), module_path))
+
+
+def unload_module(
+    module_name: str | None = None,
+    module_base: int | str | None = None,
+    module_path: str | None = None,
+) -> dict[str, Any]:
+    """Unloads a module from the MCP server process. Identify it by name, base, or path."""
+    module = _resolve_module(module_name, module_base, module_path)
+    return {"success": bool(libmem.unload_module(module)), "module": _serialize_module(module)}
+
+
+def unload_module_ex(
+    pid: int | str,
+    module_name: str | None = None,
+    module_base: int | str | None = None,
+    module_path: str | None = None,
+) -> dict[str, Any]:
+    """Unloads a module from a remote process. Identify it by name, base, or path."""
+    module = _resolve_module(module_name, module_base, module_path, pid)
+    return {"success": bool(libmem.unload_module_ex(_resolve_process(pid), module)), "module": _serialize_module(module)}
+
+
+# ── Vmt (virtual method table) hooking ────────────────────────────────────────
+# Vmt instances are stateful (they hold the original function pointers), so they
+# are kept in an in-process registry and addressed by an integer handle.
+_vmt_registry: dict[int, Any] = {}
+_vmt_ids = itertools.count(1)
+
+
+def _resolve_vmt(handle: int | str) -> Any:
+    handle_id = _as_non_negative_int(handle, "handle")
+    vmt = _vmt_registry.get(handle_id)
+    if vmt is None:
+        raise ValueError(f"No Vmt with handle {handle_id}. Create one with vmt_create first.")
+    return vmt
+
+
+def vmt_create(vtable_address: int | str) -> dict[str, Any]:
+    """Creates a Vmt manager for a virtual method table at the given address and returns its handle."""
+    address = _as_non_negative_int(vtable_address, "vtable_address")
+    handle = next(_vmt_ids)
+    _vmt_registry[handle] = libmem.Vmt(address)
+    return {"handle": handle, "vtable_address": address, "vtable_address_hex": _hex(address)}
+
+
+def vmt_list() -> list[dict[str, Any]]:
+    """Lists the currently held Vmt handles."""
+    return [{"handle": handle} for handle in sorted(_vmt_registry)]
+
+
+def vmt_hook(handle: int | str, index: int | str, dst: int | str) -> dict[str, Any]:
+    """Hooks the VMT function at an index, redirecting it to dst. Use vmt_get_original to call the original."""
+    vmt = _resolve_vmt(handle)
+    function_index = _as_non_negative_int(index, "index")
+    destination = _as_non_negative_int(dst, "dst")
+    vmt.hook(function_index, destination)
+    return {"success": True, "handle": _as_non_negative_int(handle, "handle"), "index": function_index, "dst": destination, "dst_hex": _hex(destination)}
+
+
+def vmt_unhook(handle: int | str, index: int | str) -> dict[str, Any]:
+    """Unhooks the VMT function at an index, restoring the original entry."""
+    vmt = _resolve_vmt(handle)
+    function_index = _as_non_negative_int(index, "index")
+    vmt.unhook(function_index)
+    return {"success": True, "handle": _as_non_negative_int(handle, "handle"), "index": function_index}
+
+
+def vmt_get_original(handle: int | str, index: int | str) -> dict[str, Any] | None:
+    """Gets the original (pre-hook) VMT function address at an index."""
+    vmt = _resolve_vmt(handle)
+    return _serialize_address(vmt.get_original(_as_non_negative_int(index, "index")))
+
+
+def vmt_reset(handle: int | str) -> dict[str, Any]:
+    """Resets the VMT, restoring all original function entries."""
+    vmt = _resolve_vmt(handle)
+    vmt.reset()
+    return {"success": True, "handle": _as_non_negative_int(handle, "handle")}
+
+
+def vmt_destroy(handle: int | str) -> dict[str, Any]:
+    """Resets and releases a Vmt handle. Restores all entries before dropping it."""
+    handle_id = _as_non_negative_int(handle, "handle")
+    vmt = _resolve_vmt(handle_id)
+    vmt.reset()
+    del _vmt_registry[handle_id]
+    return {"success": True, "handle": handle_id, "remaining_handles": sorted(_vmt_registry)}
+
+
+_MUTATING_TOOLS = [
+    write_memory,
+    write_memory_ex,
+    set_memory,
+    set_memory_ex,
+    alloc_memory,
+    alloc_memory_ex,
+    free_memory,
+    free_memory_ex,
+    prot_memory,
+    prot_memory_ex,
+    hook_code,
+    hook_code_ex,
+    unhook_code,
+    unhook_code_ex,
+    load_module,
+    load_module_ex,
+    unload_module,
+    unload_module_ex,
+    vmt_create,
+    vmt_list,
+    vmt_hook,
+    vmt_unhook,
+    vmt_get_original,
+    vmt_reset,
+    vmt_destroy,
+]
+
+if WRITES_ENABLED:
+    for _tool_fn in _MUTATING_TOOLS:
+        mcp.tool()(_tool_fn)
+    _logger.warning(
+        "LIBMEM_MCP_ENABLE_WRITES is set — %d mutating libmem tools are EXPOSED (memory writes, hooks, alloc, etc.)",
+        len(_MUTATING_TOOLS),
+    )
+else:
+    _logger.info(
+        "Mutating libmem tools are gated off; set LIBMEM_MCP_ENABLE_WRITES=1 to expose %d additional tools",
+        len(_MUTATING_TOOLS),
+    )
+
+
 def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(prog="libmem-mcp")
     parser.add_argument(
         "--transport",
-        choices=["stdio", "sse"],
+        choices=["stdio", "streamable-http"],
         default="stdio",
-        help="Transport to use. 'sse' starts an HTTP server you connect to; 'stdio' is for clients that spawn the process.",
+        help="Transport to use. 'streamable-http' starts an HTTP server you connect to; 'stdio' is for clients that spawn the process.",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=int(os.getenv("FASTMCP_PORT", "8765")),
-        help="Port for SSE transport (default: 8765)",
+        help="Port for streamable-http transport (default: 8765)",
     )
     ns = parser.parse_args()
 
-    if ns.transport == "sse":
-        os.environ["FASTMCP_PORT"] = str(ns.port)
+    if ns.transport == "streamable-http":
+        mcp.settings.port = ns.port
 
     # Intercept at the ToolManager.call_tool level — the single async choke
     # point for every MCP tool call, regardless of how FastMCP routes internally.
@@ -842,7 +1184,7 @@ def main() -> None:
         return result
 
     mcp._tool_manager.call_tool = _logged_call_tool  # type: ignore[method-assign]
-    _logger.info("libmem-mcp transport=%s port=%s", ns.transport, ns.port if ns.transport == "sse" else "n/a")
+    _logger.info("libmem-mcp transport=%s port=%s", ns.transport, ns.port if ns.transport == "streamable-http" else "n/a")
     try:
         mcp.run(transport=ns.transport)
     finally:

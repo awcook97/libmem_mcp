@@ -1,12 +1,20 @@
 {
   "servers": {
     "libmem-mcp": {
-      "type": "sse",
-      "url": "http://localhost:8765/sse"
+      "type": "stdio",
+      "command": "/path/to/repo/.venv/bin/python",
+      "args": ["-m", "libmem_mcp"],
+      "env": {
+        "PYTHONPATH": "/path/to/repo/src"
+      }
     },
     "gameinput-mcp": {
-      "type": "sse",
-      "url": "http://localhost:8766/sse"
+      "type": "stdio",
+      "command": "/path/to/repo/.venv/bin/python",
+      "args": ["-m", "gameinput_mcp"],
+      "env": {
+        "PYTHONPATH": "/path/to/repo/src"
+      }
     }
   }
 }

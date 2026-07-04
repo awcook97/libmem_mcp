@@ -71,18 +71,39 @@ class X11Backend:
                 f"PID {pid} owns {len(ids)} windows; "
                 "set 'window_title_regex' in your config to select one"
             )
-        return int(ids[0])
+        if len(ids) == 1:
+            return int(ids[0])
+        # Multiple windows — pick the one with the largest area (skip helper/invisible windows)
+        best_id, best_area = int(ids[0]), 0
+        for wid_str in ids:
+            try:
+                geo = self._window_geometry(int(wid_str))
+                area = geo["w"] * geo["h"]
+                if area > best_area:
+                    best_area = area
+                    best_id = int(wid_str)
+            except Exception:
+                continue
+        return best_id
+
+    def _activate(self, window: int) -> None:
+        """Bring the window to focus so Wine/EQ accepts synthetic input."""
+        _xdotool("windowactivate", "--sync", str(window), check=False)
+        time.sleep(0.05)
 
     def key_press(self, window: int, key: str) -> None:
-        _xdotool("keydown", "--window", str(window), key)
+        self._activate(window)
+        _xdotool("keydown", "--window", str(window), "--clearmodifiers", key)
 
     def key_release(self, window: int, key: str) -> None:
-        _xdotool("keyup", "--window", str(window), key)
+        self._activate(window)
+        _xdotool("keyup", "--window", str(window), "--clearmodifiers", key)
 
     def key_tap(self, window: int, key: str) -> None:
-        _xdotool("keydown", "--window", str(window), key)
+        self._activate(window)
+        _xdotool("keydown", "--window", str(window), "--clearmodifiers", key)
         time.sleep(self._TAP_DELAY)
-        _xdotool("keyup", "--window", str(window), key)
+        _xdotool("keyup", "--window", str(window), "--clearmodifiers", key)
 
     def type_text(self, window: int, text: str) -> None:
         # xdotool type handles the encoding; we scope to the window.

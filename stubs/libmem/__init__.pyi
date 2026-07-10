@@ -1,4 +1,82 @@
-from libmem._libmem import lm_arch_t as Arch, lm_inst_t as Inst, lm_module_t as Module, lm_process_t as Process, lm_prot_t as Prot, lm_segment_t as Segment, lm_symbol_t as Symbol, lm_thread_t as Thread
+"""Type stub for the libmem package (libmem 5.1.4).
+
+Mirrors libmem/__init__.py: friendly aliases for the C record types, the
+PROT_*/ARCH_* constants, and the snake_case wrapper functions. The underlying
+definitions live in the _libmem stub.
+"""
+
+from libmem._libmem import (
+    lm_arch_t as Arch,
+    lm_inst_t as Inst,
+    lm_module_t as Module,
+    lm_process_t as Process,
+    lm_prot_t as Prot,
+    lm_segment_t as Segment,
+    lm_symbol_t as Symbol,
+    lm_thread_t as Thread,
+    lm_vmt_t as Vmt,
+)
+from libmem._libmem import (
+    LM_PROT_R as PROT_R,
+    LM_PROT_W as PROT_W,
+    LM_PROT_X as PROT_X,
+    LM_PROT_XR as PROT_XR,
+    LM_PROT_XW as PROT_XW,
+    LM_PROT_RW as PROT_RW,
+    LM_PROT_XRW as PROT_XRW,
+    LM_ARCH_ARMV7 as ARCH_ARMV7,
+    LM_ARCH_ARMV8 as ARCH_ARMV8,
+    LM_ARCH_THUMBV7 as ARCH_THUMBV7,
+    LM_ARCH_THUMBV8 as ARCH_THUMBV8,
+    LM_ARCH_ARMV7EB as ARCH_ARMV7EB,
+    LM_ARCH_THUMBV7EB as ARCH_THUMBV7EB,
+    LM_ARCH_ARMV8EB as ARCH_ARMV8EB,
+    LM_ARCH_THUMBV8EB as ARCH_THUMBV8EB,
+    LM_ARCH_AARCH64 as ARCH_AARCH64,
+    LM_ARCH_MIPS as ARCH_MIPS,
+    LM_ARCH_MIPS64 as ARCH_MIPS64,
+    LM_ARCH_MIPSEL as ARCH_MIPSEL,
+    LM_ARCH_MIPSEL64 as ARCH_MIPSEL64,
+    LM_ARCH_X86_16 as ARCH_X86_16,
+    LM_ARCH_X86 as ARCH_X86,
+    LM_ARCH_X64 as ARCH_X64,
+    LM_ARCH_PPC32 as ARCH_PPC32,
+    LM_ARCH_PPC64 as ARCH_PPC64,
+    LM_ARCH_PPC64LE as ARCH_PPC64LE,
+    LM_ARCH_SPARC as ARCH_SPARC,
+    LM_ARCH_SPARC64 as ARCH_SPARC64,
+    LM_ARCH_SPARCEL as ARCH_SPARCEL,
+    LM_ARCH_SYSZ as ARCH_SYSZ,
+    LM_ARCH_MAX as ARCH_MAX,
+)
+
+# Aliases imported under a different name are only re-exported (accessible as
+# libmem.Vmt, libmem.PROT_XRW, ...) if they appear here.
+__all__ = [
+    "Arch", "Inst", "Module", "Process", "Prot", "Segment", "Symbol", "Thread", "Vmt",
+    "PROT_R", "PROT_W", "PROT_X", "PROT_XR", "PROT_XW", "PROT_RW", "PROT_XRW",
+    "ARCH_ARMV7", "ARCH_ARMV8", "ARCH_THUMBV7", "ARCH_THUMBV8",
+    "ARCH_ARMV7EB", "ARCH_THUMBV7EB", "ARCH_ARMV8EB", "ARCH_THUMBV8EB",
+    "ARCH_AARCH64", "ARCH_MIPS", "ARCH_MIPS64", "ARCH_MIPSEL", "ARCH_MIPSEL64",
+    "ARCH_X86_16", "ARCH_X86", "ARCH_X64", "ARCH_PPC32", "ARCH_PPC64", "ARCH_PPC64LE",
+    "ARCH_SPARC", "ARCH_SPARC64", "ARCH_SPARCEL", "ARCH_SYSZ", "ARCH_MAX",
+    "enum_processes", "get_process", "get_process_ex", "get_command_line",
+    "find_process", "is_process_alive", "get_bits", "get_system_bits",
+    "enum_threads", "enum_threads_ex", "get_thread", "get_thread_ex", "get_thread_process",
+    "enum_modules", "enum_modules_ex", "find_module", "find_module_ex",
+    "load_module", "load_module_ex", "unload_module", "unload_module_ex",
+    "enum_symbols", "find_symbol_address", "demangle_symbol",
+    "enum_symbols_demangled", "find_symbol_address_demangled",
+    "enum_segments", "enum_segments_ex", "find_segment", "find_segment_ex",
+    "read_memory", "read_memory_ex", "write_memory", "write_memory_ex",
+    "set_memory", "set_memory_ex", "prot_memory", "prot_memory_ex",
+    "alloc_memory", "alloc_memory_ex", "free_memory", "free_memory_ex",
+    "deep_pointer", "deep_pointer_ex", "data_scan", "data_scan_ex",
+    "pattern_scan", "pattern_scan_ex", "sig_scan", "sig_scan_ex",
+    "hook_code", "hook_code_ex", "unhook_code", "unhook_code_ex",
+    "get_architecture", "assemble", "assemble_ex", "disassemble", "disassemble_ex",
+    "code_length", "code_length_ex",
+]
 
 def enum_processes() -> list[Process] | None:
     """Lists all current living processes"""
@@ -50,7 +128,7 @@ def demangle_symbol(mangled_symbol: str) -> str | None:
     """Demangles a mangled symbol from a module"""
 def enum_symbols_demangled(module: Module) -> list[Symbol] | None:
     """Lists all demangled symbols from a module"""
-def find_symbol_address_demangled(module: Module, demangled_symbol_name: str):
+def find_symbol_address_demangled(module: Module, demangled_symbol_name: str) -> int | None:
     """Searches for a demangled symbol in a module"""
 def enum_segments() -> list[Segment] | None:
     """Lists all segments from the calling process"""

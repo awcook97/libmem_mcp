@@ -7,14 +7,6 @@
       "env": {
         "PYTHONPATH": "/path/to/repo/src"
       }
-    },
-    "gameinput-mcp": {
-      "type": "stdio",
-      "command": "/path/to/repo/.venv/bin/python",
-      "args": ["-m", "gameinput_mcp"],
-      "env": {
-        "PYTHONPATH": "/path/to/repo/src"
-      }
     }
   }
 }

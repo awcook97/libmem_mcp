@@ -1,7 +1,7 @@
 [project]
 name = "libmem-mcp"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "MCP server exposing libmem for process and memory inspection — read-only by default, with memory writes, hooks, and allocation gated behind an opt-in flag."
 readme = "README.md"
 authors = [
     { name = "Andrew Cook", email = "awcook97@gmail.com" }

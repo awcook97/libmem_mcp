@@ -1,4 +1,4 @@
-# libmem-mcp
+# libmem-mcp -- For All Your Vibe-Reversing Needs
 
 An MCP server exposing [libmem](https://github.com/rdbo/libmem) APIs for process/memory inspection. Read-only by default; mutating APIs are gated behind an environment variable.
 
